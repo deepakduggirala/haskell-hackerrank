@@ -3,6 +3,8 @@ import qualified Data.Map.Strict               as M
 import           Data.Function                  ( on )
 import           Data.List                      ( sort )
 
+-- https://www.cmi.ac.in/~madhavan/courses/prog2-2012/lectures/balanced-search-trees-in-haskell.txt
+
 liftSnd :: (b -> c) -> (a, b) -> (a, c)
 liftSnd f (x, y) = (x, f y)
 
