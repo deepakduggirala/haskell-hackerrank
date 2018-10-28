@@ -1,4 +1,4 @@
-
+-- https://www.twanvl.nl/blog/haskell/Knuth-Morris-Pratt-in-Haskell
 
 main :: IO ()
 main = interact $ unlines . map (uncurry solve) . split2 . tail . lines
