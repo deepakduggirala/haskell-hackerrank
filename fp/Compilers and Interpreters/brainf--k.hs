@@ -1,4 +1,5 @@
--- Doesn't work when there are exactly 10^5 operations. 
+module BrainFuck2 where
+
 
 import           Control.Monad
 import           Data.List                      ( intercalate
@@ -12,6 +13,9 @@ import           Data.Function                  ( on
 
 import           Control.Applicative
 import           Data.Char
+import           Control.Monad.State.Lazy
+import           Control.Monad.Writer.Lazy
+import           Control.Monad.Except
 
 newtype Parser a = P (String -> [(a, String)])
 
@@ -221,6 +225,31 @@ type ListZipper a = ([a], [a])
 
 type Memory = ListZipper Int
 
+data World = World {
+  inp :: [Int],
+  out :: [Int],
+  mem :: Memory,
+  count :: Int
+} deriving Show
+
+emptyMemory = ([0], [])
+op_limit = 100000
+
+increment :: Memory -> Memory
+increment (m : ms, bs) = ((m + 1) `mod` 256 : ms, bs)
+increment ([]    , bs) = ([], bs)
+
+decrement :: Memory -> Memory
+decrement (m : ms, bs) = ((if m == 0 then 255 else (m - 1)) : ms, bs)
+decrement ([]    , bs) = ([], bs)
+
+replace :: Int -> Memory -> Memory
+replace x (m : ms, bs) = (x : ms, bs)
+replace x ([]    , bs) = ([], bs)
+
+extract :: Memory -> Int
+extract (m : ms, _) = m
+
 forward :: Memory -> Memory
 forward ([ x ] , bs) = ([0], x : bs)
 forward (x : xs, bs) = (xs, x : bs)
@@ -229,72 +258,61 @@ backward :: Memory -> Memory
 backward (xs, []    ) = (0 : xs, [])
 backward (xs, b : bs) = (b : xs, bs)
 
-increment :: Memory -> Memory
-increment (m : ms, bs) = ((m + 1) : ms, bs)
+loop
+  :: [Instruction]
+  -> StateT World (Except World) ()
+  -> StateT World (Except World) ()
+loop terms sp = sp >> do
+  s <- get
+  if head (fst (mem s)) == 0
+    then put s
+    else
+      limit
+      >> tick
+      >> loop terms (foldM (\_ t -> eval t) () terms)
+      >> limit
+      >> tick
 
-decrement :: Memory -> Memory
-decrement (m : ms, bs) = ((m - 1) : ms, bs)
+limit :: StateT World (Except World) ()
+limit = do
+  s <- get
+  when (count s >= op_limit) $ throwError s
 
-output :: Memory -> Int
-output (m : ms, _) = m
+tick :: StateT World (Except World) ()
+tick = modify (\s -> s { count = count s + 1 })
 
-input :: Int -> Memory -> Memory
-input x (m : ms, bs) = (x : ms, bs)
+eval :: Instruction -> StateT World (Except World) ()
+eval Input = limit >> tick >> modify
+  (\s -> s { inp = tail (inp s), mem = replace (head (inp s)) (mem s) })
+eval Output =
+  limit >> tick >> modify (\s -> s { out = extract (mem s) : out s })
+eval Increment = limit >> tick >> modify (\s -> s { mem = increment $ mem s })
+eval Decrement = limit >> tick >> modify (\s -> s { mem = decrement $ mem s })
+eval Forward = limit >> tick >> modify (\s -> s { mem = forward $ mem s })
+eval Backward = limit >> tick >> modify (\s -> s { mem = backward $ mem s })
+eval (Loop terms) = loop terms (void get)
 
-type IM = ([Int], Memory, Int)
+type Instructions = [Instruction]
 
-go :: [Instruction] -> IM -> IO IM
-go []             im                    = return im
--- go _              im@(_, _, op_limit) = return im
-go (inst : insts) im@(inp, mem, numops) = if numops >= op_limit
-  then return im
-  else do
--- print numops
-    im' <- applyInst inst im
-    go insts im'
+interp :: Instructions -> World -> Either World World
+interp insts w =
+  let sp = foldM (\_ inst -> eval inst) () insts in runExcept (execStateT sp w)
 
-applyInst :: Instruction -> IM -> IO IM
-applyInst inst im@(inp, mem, numops) = if numops >= op_limit
-  then return im
-  else case inst of
-    Forward   -> return (inp, forward mem, numops + 1)
-    Backward  -> return (inp, backward mem, numops + 1)
-    Increment -> return (inp, increment mem, numops + 1)
-    Decrement -> return (inp, decrement mem, numops + 1)
-    Output    -> do
-      putChar $ chr $ output mem
-      return (inp, mem, numops + 1)
-    Input    -> return (tail inp, input (head inp) mem, numops + 1)
-    Loop ins -> loop ins im
-    -- Loop ins -> case mem of
-    --   ((0 : _), _) -> return (inp, mem, numops + 2)
-    --   _            -> do
-    --     (inp', mem', numops') <- go ins (inp, mem, numops + 1)
-    --     applyInst (Loop ins) (inp', mem', numops' + 1)
-
-loop :: [Instruction] -> IM -> IO IM
-loop ins im@(inp, mem, numops) = case mem of
-  ((0 : _), _) -> return (inp, mem, numops + 2)
-  _            -> do
-    im'@(inp', mem', numops') <- go ins (inp, mem, numops + 1)
-    if numops' >= op_limit
-      then return im'
-      else case mem' of
-        ((0 : _), _) -> return (inp', mem', numops' + 1)
-        _            -> loop ins (inp', mem', numops' + 1)
-
-emptyMemory = ([0], [])
-op_limit = 100000
-
-interpret :: [Int] -> String -> IO IM
+interpret :: [Int] -> String -> IO ()
 interpret input text =
-  let ins = parseIntrutions text in go ins (input, emptyMemory, 0)
+  let ins   = parseIntrutions text
+      world = interp ins $ World input [] emptyMemory 0
+  in  either (\w -> printOutput w >> putStrLn "PROCESS TIME OUT. KILLED!!!")
+              printOutput
+              world
+
+printOutput :: World -> IO ()
+printOutput = putStrLn . map chr . reverse . out
 
 main :: IO ()
 main = do
   getLine
-  input          <- map ord . init <$> getLine
-  text           <- getContents
-  (_, _, numops) <- interpret input text
-  when (numops >= op_limit) $ putStrLn "\nPROCESS TIME OUT. KILLED!!!"
+  input <- map ord . init <$> getLine
+  text  <- getContents
+  interpret input text
 
